@@ -21,6 +21,59 @@
       margin: 0;
       overflow: hidden;
     }
+    
+    /* デフォルト(モバイル)レイアウト */
+    #app-container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      width: 100vw;
+    }
+    
+    #canvas-container {
+      flex: 1;
+      position: relative;
+      min-height: 0;
+    }
+    
+    #edit-panel {
+      position: relative;
+      max-height: 50vh;
+      overflow-y: auto;
+    }
+    
+    /* タブレット以上:左右分割レイアウト */
+    @media (min-width: 768px) {
+      #app-container {
+        flex-direction: row;
+      }
+      
+      #canvas-container {
+        flex: 1;
+        min-width: 0;
+      }
+      
+      #edit-panel {
+        width: 400px;
+        max-height: 100vh;
+        height: 100vh;
+        flex-shrink: 0;
+      }
+    }
+    
+    /* より大きなPC画面 */
+    @media (min-width: 1024px) {
+      #edit-panel {
+        width: 480px;
+      }
+    }
+    
+    /* 大型デスクトップ画面 */
+    @media (min-width: 1440px) {
+      #edit-panel {
+        width: 560px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -89,7 +142,7 @@
 
         const camera = new THREE.PerspectiveCamera(
           75,
-          window.innerWidth / window.innerHeight,
+          16 / 9, // 初期値、後でリサイズされる
           0.1,
           1000
         );
@@ -101,7 +154,7 @@
           canvas: canvasRef.current,
           antialias: true 
         });
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(800, 600); // 初期値、後でリサイズされる
         renderer.shadowMap.enabled = true;
         rendererRef.current = renderer;
 
@@ -120,11 +173,19 @@
         scene.add(axesHelper);
 
         const handleResize = () => {
-          camera.aspect = window.innerWidth / window.innerHeight;
-          camera.updateProjectionMatrix();
-          renderer.setSize(window.innerWidth, window.innerHeight);
+          const container = document.getElementById('canvas-container');
+          if (container && camera && renderer) {
+            const width = container.offsetWidth;
+            const height = container.offsetHeight;
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+          }
         };
         window.addEventListener('resize', handleResize);
+        
+        // 初期サイズ設定
+        setTimeout(handleResize, 100);
 
         return () => {
           window.removeEventListener('resize', handleResize);
@@ -577,9 +638,10 @@
           
           const clonedMesh = obj.clone();
           clonedMesh.name = `object_${objData.id}`;
-          clonedMesh.position.copy(obj.position);
-          clonedMesh.rotation.set(0, 0, 0); // Reset rotation for export
-          clonedMesh.scale.set(1, 1, 1); // Reset scale for export
+          // 初期位置をセット（アニメーション開始位置）
+          clonedMesh.position.set(objData.position.x, objData.position.y, objData.position.z);
+          clonedMesh.rotation.set(0, 0, 0);
+          clonedMesh.scale.set(1, 1, 1);
           
           exportGroup.add(clonedMesh);
           exportedObjects.push({ mesh: clonedMesh, data: objData });
@@ -732,9 +794,15 @@
         });
 
         // Create animation clip if there are tracks
+        let animationClips = [];
         if (tracks.length > 0) {
-          const clip = new THREE.AnimationClip('Action', duration, tracks);
-          exportGroup.animations = [clip];
+          const clip = new THREE.AnimationClip('AnimatedScene', duration, tracks);
+          // ループアニメーションとして設定
+          clip.loop = THREE.LoopRepeat;
+          animationClips.push(clip);
+          console.log('Created animation clip with', tracks.length / 3, 'objects');
+        } else {
+          console.log('No animations to export');
         }
 
         // Export only the group (not the entire scene)
@@ -748,12 +816,22 @@
             link.download = '3d-model-animated.glb';
             link.click();
             URL.revokeObjectURL(url);
+            
+            if (animationClips.length > 0) {
+              console.log('✅ Exported with', animationClips.length, 'animation(s)');
+              alert(`GLBファイルを保存しました！\n${animationClips.length}個のアニメーションを含みます。`);
+            } else {
+              alert('GLBファイルを保存しました。\n（アニメーションなし）');
+            }
           },
           (error) => {
             console.error('Export error:', error);
             alert('エクスポート中にエラーが発生しました');
           },
-          { binary: true, animations: tracks.length > 0 ? exportGroup.animations : [] }
+          { 
+            binary: true, 
+            animations: animationClips
+          }
         );
       };
 
@@ -769,49 +847,51 @@
       };
 
       return (
-        <div className="fixed inset-0 bg-gray-900 text-white overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 bg-gray-800 p-3 flex items-center justify-between border-b border-gray-700 z-10">
-            <h1 className="text-xl font-bold">3Dモデル作成</h1>
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  setSelectionMode(!selectionMode);
-                  setSelectedForGroup([]);
-                }}
-                className={`px-6 py-3 rounded-lg transition text-base font-medium active:scale-95 ${
-                  selectionMode ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-500'
-                }`}
-              >
-                {selectionMode ? '🔗 選択中' : '🔗 グループ化'}
-              </button>
-              {selectionMode && selectedForGroup.length >= 2 && (
+        <div id="app-container" className="fixed inset-0 bg-gray-900 text-white overflow-hidden">
+          <div id="canvas-container" className="relative w-full h-full">
+            <div className="absolute top-0 left-0 right-0 bg-gray-800 p-3 flex items-center justify-between border-b border-gray-700 z-10">
+              <h1 className="text-xl font-bold">3Dモデル作成</h1>
+              <div className="flex gap-2">
                 <button
-                  onClick={createGroup}
-                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium active:scale-95"
+                  onClick={() => {
+                    setSelectionMode(!selectionMode);
+                    setSelectedForGroup([]);
+                  }}
+                  className={`px-6 py-3 rounded-lg transition text-base font-medium active:scale-95 ${
+                    selectionMode ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-500'
+                  }`}
                 >
-                  ✅ グループ作成
+                  {selectionMode ? '🔗 選択中' : '🔗 グループ化'}
                 </button>
-              )}
-              <button
-                onClick={() => setIsPlaying(!isPlaying)}
-                disabled={selectionMode}
-                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-base font-medium active:scale-95 disabled:bg-gray-600"
-              >
-                {isPlaying ? '⏸' : '▶'}
-              </button>
-              <button
-                onClick={exportGLB}
-                disabled={objects.length === 0 || !exporterLoaded}
-                className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
-              >
-                💾 保存
-              </button>
+                {selectionMode && selectedForGroup.length >= 2 && (
+                  <button
+                    onClick={createGroup}
+                    className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium active:scale-95"
+                  >
+                    ✅ グループ作成
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsPlaying(!isPlaying)}
+                  disabled={selectionMode}
+                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-base font-medium active:scale-95 disabled:bg-gray-600"
+                >
+                  {isPlaying ? '⏸' : '▶'}
+                </button>
+                <button
+                  onClick={exportGLB}
+                  disabled={objects.length === 0 || !exporterLoaded}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
+                >
+                  💾 保存
+                </button>
+              </div>
             </div>
+
+            <canvas ref={canvasRef} className="w-full h-full" />
           </div>
 
-          <canvas ref={canvasRef} className="w-full h-full" />
-
-          <div className="absolute bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 z-10 max-h-96 overflow-y-auto">
+          <div id="edit-panel" className="absolute bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 z-10 max-h-96 overflow-y-auto">{/* 編集パネルの内容 */}
             <div className="p-4 border-b border-gray-700">
               <h2 className="text-lg font-bold mb-3">図形を追加</h2>
               <div className="grid grid-cols-5 gap-2 mb-3">
