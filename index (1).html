@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3Dモデルアニメーター</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+    
+    // Make THREE and GLTFExporter available globally for the Babel script
+    window.THREE = THREE;
+    window.GLTFExporter = GLTFExporter;
+    
+    // Dispatch event when modules are loaded
+    window.dispatchEvent(new Event('threeLoaded'));
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const ShapeAnimator = () => {
+      const canvasRef = useRef(null);
+      const sceneRef = useRef(null);
+      const rendererRef = useRef(null);
+      const cameraRef = useRef(null);
+      const clockRef = useRef(new THREE.Clock());
+      const animationIdRef = useRef(null);
+      const objectsRef = useRef([]);
+      const touchRef = useRef({ lastX: 0, lastY: 0, isDragging: false });
+
+      const [objects, setObjects] = useState([]);
+      const [selectedId, setSelectedId] = useState(null);
+      const [isPlaying, setIsPlaying] = useState(true);
+      const [exporterLoaded, setExporterLoaded] = useState(false);
+      const exporterRef = useRef(null);
+      const [groups, setGroups] = useState([]);
+      const [selectedGroupId, setSelectedGroupId] = useState(null);
+      const [selectionMode, setSelectionMode] = useState(false);
+      const [selectedForGroup, setSelectedForGroup] = useState([]);
+
+      // Check if GLTFExporter is loaded
+      useEffect(() => {
+        const checkExporter = () => {
+          if (window.GLTFExporter) {
+            exporterRef.current = new window.GLTFExporter();
+            setExporterLoaded(true);
+          } else {
+            setTimeout(checkExporter, 100);
+          }
+        };
+        
+        // Wait for Three.js modules to load
+        if (window.THREE && window.GLTFExporter) {
+          checkExporter();
+        } else {
+          window.addEventListener('threeLoaded', checkExporter);
+          return () => window.removeEventListener('threeLoaded', checkExporter);
+        }
+      }, []);
+
+      // Initialize Three.js scene
+      useEffect(() => {
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a2e);
+        sceneRef.current = scene;
+
+        const camera = new THREE.PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          1000
+        );
+        camera.position.set(5, 5, 8);
+        camera.lookAt(0, 0, 0);
+        cameraRef.current = camera;
+
+        const renderer = new THREE.WebGLRenderer({ 
+          canvas: canvasRef.current,
+          antialias: true 
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        rendererRef.current = renderer;
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        directionalLight.castShadow = true;
+        scene.add(directionalLight);
+
+        const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+        scene.add(gridHelper);
+
+        const axesHelper = new THREE.AxesHelper(5);
+        scene.add(axesHelper);
+
+        const handleResize = () => {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+        window.addEventListener('resize', handleResize);
+
+        return () => {
+          window.removeEventListener('resize', handleResize);
+          if (animationIdRef.current) {
+            cancelAnimationFrame(animationIdRef.current);
+          }
+        };
+      }, []);
+
+      // Touch controls for camera
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const handleTouchStart = (e) => {
+          if (e.touches.length === 1) {
+            touchRef.current.isDragging = true;
+            touchRef.current.lastX = e.touches[0].clientX;
+            touchRef.current.lastY = e.touches[0].clientY;
+          }
+        };
+
+        const handleTouchMove = (e) => {
+          if (!touchRef.current.isDragging || e.touches.length !== 1) return;
+          e.preventDefault();
+
+          const deltaX = e.touches[0].clientX - touchRef.current.lastX;
+          const deltaY = e.touches[0].clientY - touchRef.current.lastY;
+
+          const camera = cameraRef.current;
+          const rotationSpeed = 0.005;
+
+          const radius = Math.sqrt(
+            camera.position.x ** 2 + 
+            camera.position.z ** 2
+          );
+          
+          const currentAngle = Math.atan2(camera.position.z, camera.position.x);
+          const newAngle = currentAngle - deltaX * rotationSpeed;
+          
+          camera.position.x = radius * Math.cos(newAngle);
+          camera.position.z = radius * Math.sin(newAngle);
+          
+          camera.position.y = Math.max(1, camera.position.y - deltaY * rotationSpeed * 10);
+          
+          camera.lookAt(0, 0, 0);
+
+          touchRef.current.lastX = e.touches[0].clientX;
+          touchRef.current.lastY = e.touches[0].clientY;
+        };
+
+        const handleTouchEnd = () => {
+          touchRef.current.isDragging = false;
+        };
+
+        canvas.addEventListener('touchstart', handleTouchStart, { passive: true });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd);
+
+        return () => {
+          canvas.removeEventListener('touchstart', handleTouchStart);
+          canvas.removeEventListener('touchmove', handleTouchMove);
+          canvas.removeEventListener('touchend', handleTouchEnd);
+        };
+      }, []);
+
+      const createCustomGeometry = (shape, size) => {
+        switch (shape) {
+          case 'box':
+            return new THREE.BoxGeometry(size, size, size);
+          case 'rectangular':
+            return new THREE.BoxGeometry(size * 1.5, size, size * 0.7);
+          case 'sphere':
+            return new THREE.SphereGeometry(size / 2, 32, 32);
+          case 'cylinder':
+            return new THREE.CylinderGeometry(size / 2, size / 2, size, 32);
+          case 'cone':
+            return new THREE.ConeGeometry(size / 2, size, 32);
+          case 'torus':
+            return new THREE.TorusGeometry(size / 2, size / 4, 16, 100);
+          case 'octahedron':
+            return new THREE.OctahedronGeometry(size / 2);
+          case 'dodecahedron':
+            return new THREE.DodecahedronGeometry(size / 2);
+          case 'icosahedron':
+            return new THREE.IcosahedronGeometry(size / 2);
+          case 'diamond':
+            return new THREE.ConeGeometry(size / 2, size * 0.7, 4);
+          case 'heart': {
+            const heartShape = new THREE.Shape();
+            const x = 0, y = 0;
+            heartShape.moveTo(x + 0.5, y + 0.5);
+            heartShape.bezierCurveTo(x + 0.5, y + 0.5, x + 0.4, y, x, y);
+            heartShape.bezierCurveTo(x - 0.6, y, x - 0.6, y + 0.7, x - 0.6, y + 0.7);
+            heartShape.bezierCurveTo(x - 0.6, y + 1.1, x - 0.3, y + 1.54, x + 0.5, y + 1.9);
+            heartShape.bezierCurveTo(x + 1.2, y + 1.54, x + 1.6, y + 1.1, x + 1.6, y + 0.7);
+            heartShape.bezierCurveTo(x + 1.6, y + 0.7, x + 1.6, y, x + 1, y);
+            heartShape.bezierCurveTo(x + 0.7, y, x + 0.5, y + 0.5, x + 0.5, y + 0.5);
+            
+            const extrudeSettings = {
+              depth: size / 2,
+              bevelEnabled: true,
+              bevelSegments: 2,
+              steps: 2,
+              bevelSize: 0.1,
+              bevelThickness: 0.1
+            };
+            const geometry = new THREE.ExtrudeGeometry(heartShape, extrudeSettings);
+            geometry.scale(size / 2, size / 2, size / 2);
+            geometry.center();
+            return geometry;
+          }
+          default:
+            return new THREE.BoxGeometry(size, size, size);
+        }
+      };
+
+      const applyAnimation = (obj, objData, animation, time, delta) => {
+        const speed = animation.speed;
+        const basePos = objData.position;
+        
+        switch (animation.type) {
+          case 'rotate':
+            obj.rotation.x += speed * delta * animation.rotationAxis.x;
+            obj.rotation.y += speed * delta * animation.rotationAxis.y;
+            obj.rotation.z += speed * delta * animation.rotationAxis.z;
+            break;
+          case 'spin_x':
+            obj.rotation.x += speed * delta * 2;
+            break;
+          case 'spin_y':
+            obj.rotation.y += speed * delta * 2;
+            break;
+          case 'spin_z':
+            obj.rotation.z += speed * delta * 2;
+            break;
+          case 'bounce':
+            obj.position.y = basePos.y + Math.abs(Math.sin(time * speed)) * 2;
+            break;
+          case 'orbit':
+            obj.position.x = basePos.x + Math.cos(time * speed) * 3;
+            obj.position.z = basePos.z + Math.sin(time * speed) * 3;
+            break;
+          case 'swing':
+            obj.rotation.z = Math.sin(time * speed) * 0.5;
+            break;
+          case 'wave':
+            obj.position.y = basePos.y + Math.sin(time * speed) * 1.5;
+            obj.position.x = basePos.x + Math.sin(time * speed * 0.5) * 0.5;
+            break;
+          case 'spiral_up':
+            obj.position.x = basePos.x + Math.cos(time * speed) * 2;
+            obj.position.z = basePos.z + Math.sin(time * speed) * 2;
+            obj.position.y = basePos.y + (time * speed * 0.3) % 5;
+            break;
+          case 'spiral_down':
+            obj.position.x = basePos.x + Math.cos(time * speed) * 2;
+            obj.position.z = basePos.z + Math.sin(time * speed) * 2;
+            obj.position.y = basePos.y + 5 - ((time * speed * 0.3) % 5);
+            break;
+          case 'pulse':
+            const scale = 1 + Math.sin(time * speed * 2) * 0.3;
+            obj.scale.set(scale, scale, scale);
+            break;
+          case 'shake':
+            obj.position.x = basePos.x + (Math.random() - 0.5) * 0.1 * speed;
+            obj.position.y = basePos.y + (Math.random() - 0.5) * 0.1 * speed;
+            obj.position.z = basePos.z + (Math.random() - 0.5) * 0.1 * speed;
+            break;
+          case 'float':
+            obj.position.y = basePos.y + Math.sin(time * speed * 0.5) * 1 + Math.cos(time * speed * 0.3) * 0.5;
+            break;
+          case 'zigzag':
+            const zigzagPhase = Math.floor(time * speed) % 2;
+            obj.position.x = basePos.x + (zigzagPhase === 0 ? 2 : -2);
+            break;
+          case 'figure8':
+            obj.position.x = basePos.x + Math.sin(time * speed) * 3;
+            obj.position.y = basePos.y + Math.sin(time * speed * 2) * 1.5;
+            break;
+          case 'square':
+            const squarePhase = (time * speed) % 4;
+            if (squarePhase < 1) {
+              obj.position.x = basePos.x + 2;
+              obj.position.z = basePos.z + (squarePhase * 4 - 2);
+            } else if (squarePhase < 2) {
+              obj.position.x = basePos.x + (3 - squarePhase * 2) * 2;
+              obj.position.z = basePos.z + 2;
+            } else if (squarePhase < 3) {
+              obj.position.x = basePos.x - 2;
+              obj.position.z = basePos.z + (7 - squarePhase * 2) * 2;
+            } else {
+              obj.position.x = basePos.x + (squarePhase * 2 - 7) * 2;
+              obj.position.z = basePos.z - 2;
+            }
+            break;
+          case 'triangle':
+            const triPhase = (time * speed) % 3;
+            if (triPhase < 1) {
+              obj.position.x = basePos.x + triPhase * 3;
+              obj.position.z = basePos.z;
+            } else if (triPhase < 2) {
+              obj.position.x = basePos.x + 3 - (triPhase - 1) * 1.5;
+              obj.position.z = basePos.z + (triPhase - 1) * 2.6;
+            } else {
+              obj.position.x = basePos.x + 1.5 - (triPhase - 2) * 1.5;
+              obj.position.z = basePos.z + 2.6 - (triPhase - 2) * 2.6;
+            }
+            break;
+          case 'heart_path':
+            const t = time * speed;
+            obj.position.x = basePos.x + 16 * Math.pow(Math.sin(t), 3) * 0.15;
+            obj.position.y = basePos.y + (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 0.15;
+            break;
+          case 'infinity':
+            const s = time * speed;
+            obj.position.x = basePos.x + Math.sin(s) * 3;
+            obj.position.z = basePos.z + Math.sin(s * 2) * 1.5;
+            break;
+          case 'spiral_orbit':
+            const radius = 2 + Math.sin(time * speed * 0.5) * 1.5;
+            obj.position.x = basePos.x + Math.cos(time * speed) * radius;
+            obj.position.z = basePos.z + Math.sin(time * speed) * radius;
+            break;
+          case 'bounce_rotate':
+            obj.position.y = basePos.y + Math.abs(Math.sin(time * speed)) * 2;
+            obj.rotation.y += speed * delta * 2;
+            break;
+          case 'wobble':
+            obj.rotation.x = Math.sin(time * speed * 2) * 0.3;
+            obj.rotation.z = Math.cos(time * speed * 2) * 0.3;
+            break;
+          case 'flip':
+            obj.rotation.x = Math.floor(time * speed) * Math.PI;
+            break;
+          case 'roll':
+            obj.position.x = basePos.x + (time * speed) % 6 - 3;
+            obj.rotation.z = (time * speed) * 2;
+            break;
+          case 'jump':
+            const jumpPhase = (time * speed) % 2;
+            if (jumpPhase < 0.3) {
+              obj.position.y = basePos.y + jumpPhase * 10;
+            } else if (jumpPhase < 1) {
+              obj.position.y = basePos.y + 3 - (jumpPhase - 0.3) * 4.3;
+            } else {
+              obj.position.y = basePos.y;
+            }
+            break;
+          case 'slide_x':
+            obj.position.x = basePos.x + Math.sin(time * speed) * 3;
+            break;
+          case 'slide_z':
+            obj.position.z = basePos.z + Math.sin(time * speed) * 3;
+            break;
+          case 'helix':
+            obj.position.x = basePos.x + Math.cos(time * speed) * 2;
+            obj.position.z = basePos.z + Math.sin(time * speed) * 2;
+            obj.position.y = basePos.y + Math.sin(time * speed * 3) * 1;
+            break;
+          case 'pendulum':
+            const angle = Math.sin(time * speed) * 1.2;
+            obj.position.x = basePos.x + Math.sin(angle) * 2.5;
+            obj.position.y = basePos.y - Math.cos(angle) * 2.5 + 2.5;
+            obj.rotation.z = angle;
+            break;
+          case 'twist':
+            obj.rotation.x += speed * delta;
+            obj.rotation.y += speed * delta * 0.7;
+            obj.rotation.z += speed * delta * 0.5;
+            break;
+          case 'breathe':
+            const breatheScale = 1 + Math.sin(time * speed * 0.5) * 0.2;
+            obj.scale.set(breatheScale, breatheScale, breatheScale);
+            break;
+          case 'teleport':
+            if (Math.floor(time * speed) % 2 === 0) {
+              obj.visible = true;
+            } else {
+              obj.visible = Math.random() > 0.5;
+            }
+            break;
+          default:
+            break;
+        }
+      };
+
+      // Animation loop
+      useEffect(() => {
+        const animate = () => {
+          animationIdRef.current = requestAnimationFrame(animate);
+          
+          if (isPlaying) {
+            const delta = clockRef.current.getDelta();
+            const time = clockRef.current.getElapsedTime();
+            
+            groups.forEach((group) => {
+              if (group.animation.type === 'none') return;
+              
+              const groupObjects = objectsRef.current.filter(obj => 
+                objects.find(o => o.id === obj.userData.id && o.groupId === group.id)
+              );
+              
+              groupObjects.forEach((obj) => {
+                const objData = objects.find(o => o.id === obj.userData.id);
+                if (!objData) return;
+                applyAnimation(obj, objData, group.animation, time, delta);
+              });
+            });
+            
+            objectsRef.current.forEach((obj) => {
+              const objData = objects.find(o => o.id === obj.userData.id);
+              if (!objData || objData.groupId) return;
+              applyAnimation(obj, objData, objData.animation, time, delta);
+            });
+          }
+
+          rendererRef.current.render(sceneRef.current, cameraRef.current);
+        };
+        animate();
+      }, [objects, groups, isPlaying]);
+
+      // Update scene objects
+      useEffect(() => {
+        objectsRef.current.forEach(obj => {
+          sceneRef.current.remove(obj);
+          obj.geometry.dispose();
+          obj.material.dispose();
+        });
+        objectsRef.current = [];
+
+        objects.forEach(objData => {
+          const geometry = createCustomGeometry(objData.shape, objData.size);
+          
+          const material = new THREE.MeshStandardMaterial({ 
+            color: objData.color,
+            metalness: 0.3,
+            roughness: 0.4
+          });
+          const mesh = new THREE.Mesh(geometry, material);
+          
+          mesh.position.set(objData.position.x, objData.position.y, objData.position.z);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          mesh.userData.id = objData.id;
+          
+          sceneRef.current.add(mesh);
+          objectsRef.current.push(mesh);
+        });
+      }, [objects]);
+
+      const addShape = (shape) => {
+        const newObject = {
+          id: Date.now(),
+          shape,
+          size: 1,
+          color: '#' + Math.floor(Math.random()*16777215).toString(16),
+          position: { x: 0, y: 1, z: 0 },
+          animation: {
+            type: 'rotate',
+            speed: 1,
+            rotationAxis: { x: 0, y: 1, z: 0 }
+          },
+          groupId: null
+        };
+        setObjects([...objects, newObject]);
+        setSelectedId(newObject.id);
+      };
+
+      const updateObject = (id, updates) => {
+        setObjects(objects.map(obj => 
+          obj.id === id ? { ...obj, ...updates } : obj
+        ));
+      };
+
+      const deleteObject = (id) => {
+        setObjects(objects.filter(obj => obj.id !== id));
+        if (selectedId === id) setSelectedId(null);
+      };
+
+      const createGroup = () => {
+        if (selectedForGroup.length < 2) {
+          alert('グループを作成するには2つ以上のオブジェクトを選択してください');
+          return;
+        }
+        
+        const newGroup = {
+          id: Date.now(),
+          name: `グループ ${groups.length + 1}`,
+          animation: {
+            type: 'rotate',
+            speed: 1,
+            rotationAxis: { x: 0, y: 1, z: 0 }
+          }
+        };
+        
+        setGroups([...groups, newGroup]);
+        
+        setObjects(objects.map(obj => 
+          selectedForGroup.includes(obj.id) ? { ...obj, groupId: newGroup.id } : obj
+        ));
+        
+        setSelectedForGroup([]);
+        setSelectionMode(false);
+        setSelectedGroupId(newGroup.id);
+      };
+
+      const ungroupObjects = (groupId) => {
+        setObjects(objects.map(obj => 
+          obj.groupId === groupId ? { ...obj, groupId: null } : obj
+        ));
+        setGroups(groups.filter(g => g.id !== groupId));
+        if (selectedGroupId === groupId) setSelectedGroupId(null);
+      };
+
+      const updateGroup = (id, updates) => {
+        setGroups(groups.map(group => 
+          group.id === id ? { ...group, ...updates } : group
+        ));
+      };
+
+      const toggleObjectSelection = (id) => {
+        if (selectedForGroup.includes(id)) {
+          setSelectedForGroup(selectedForGroup.filter(objId => objId !== id));
+        } else {
+          const obj = objects.find(o => o.id === id);
+          if (!obj.groupId) {
+            setSelectedForGroup([...selectedForGroup, id]);
+          }
+        }
+      };
+
+      const exportGLB = () => {
+        if (!exporterRef.current) {
+          alert('エクスポーターの読み込み中です。もう一度お試しください。');
+          return;
+        }
+
+        const exporter = exporterRef.current;
+        
+        // Create a temporary group with only the objects (no grid, lights, axes)
+        const exportGroup = new THREE.Group();
+        exportGroup.name = '3DModel';
+        
+        // Clone objects for export
+        const exportedObjects = [];
+        objectsRef.current.forEach((obj) => {
+          const objData = objects.find(o => o.id === obj.userData.id);
+          if (!objData) return;
+          
+          const clonedMesh = obj.clone();
+          clonedMesh.name = `object_${objData.id}`;
+          clonedMesh.position.copy(obj.position);
+          clonedMesh.rotation.set(0, 0, 0); // Reset rotation for export
+          clonedMesh.scale.set(1, 1, 1); // Reset scale for export
+          
+          exportGroup.add(clonedMesh);
+          exportedObjects.push({ mesh: clonedMesh, data: objData });
+        });
+        
+        // Create animation tracks
+        const tracks = [];
+        const duration = 4; // 4 seconds animation
+        const fps = 30;
+        const numFrames = duration * fps;
+        
+        exportedObjects.forEach(({ mesh, data }) => {
+          const animation = data.groupId 
+            ? groups.find(g => g.id === data.groupId)?.animation 
+            : data.animation;
+          
+          if (!animation || animation.type === 'none') return;
+          
+          const name = mesh.name;
+          const basePos = data.position;
+          
+          // Generate keyframes based on animation type
+          const times = [];
+          const positionValues = [];
+          const rotationValues = [];
+          const scaleValues = [];
+          
+          for (let i = 0; i <= numFrames; i++) {
+            const t = (i / numFrames) * duration;
+            const time = t * animation.speed;
+            times.push(t);
+            
+            // Default values
+            let px = basePos.x, py = basePos.y, pz = basePos.z;
+            let rx = 0, ry = 0, rz = 0;
+            let sx = 1, sy = 1, sz = 1;
+            
+            // Apply animation transformations
+            switch (animation.type) {
+              case 'rotate':
+                rx = time * animation.rotationAxis.x * Math.PI * 2;
+                ry = time * animation.rotationAxis.y * Math.PI * 2;
+                rz = time * animation.rotationAxis.z * Math.PI * 2;
+                break;
+              case 'spin_x':
+                rx = time * 2 * Math.PI * 2;
+                break;
+              case 'spin_y':
+                ry = time * 2 * Math.PI * 2;
+                break;
+              case 'spin_z':
+                rz = time * 2 * Math.PI * 2;
+                break;
+              case 'bounce':
+                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
+                break;
+              case 'orbit':
+                px = basePos.x + Math.cos(time * Math.PI * 2) * 3;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 3;
+                break;
+              case 'swing':
+                rz = Math.sin(time * Math.PI * 2) * 0.5;
+                break;
+              case 'wave':
+                py = basePos.y + Math.sin(time * Math.PI * 2) * 1.5;
+                px = basePos.x + Math.sin(time * Math.PI) * 0.5;
+                break;
+              case 'spiral_up':
+                px = basePos.x + Math.cos(time * Math.PI * 2) * 2;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 2;
+                py = basePos.y + (time * 0.3 % 5);
+                break;
+              case 'float':
+                py = basePos.y + Math.sin(time * Math.PI) * 1 + Math.cos(time * Math.PI * 0.6) * 0.5;
+                break;
+              case 'figure8':
+                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
+                py = basePos.y + Math.sin(time * Math.PI * 4) * 1.5;
+                break;
+              case 'heart_path':
+                const angle = time * Math.PI * 2;
+                px = basePos.x + 16 * Math.pow(Math.sin(angle), 3) * 0.15;
+                py = basePos.y + (13 * Math.cos(angle) - 5 * Math.cos(2*angle) - 2 * Math.cos(3*angle) - Math.cos(4*angle)) * 0.15;
+                break;
+              case 'pulse':
+                const scale = 1 + Math.sin(time * Math.PI * 4) * 0.3;
+                sx = sy = sz = scale;
+                break;
+              case 'wobble':
+                rx = Math.sin(time * Math.PI * 4) * 0.3;
+                rz = Math.cos(time * Math.PI * 4) * 0.3;
+                break;
+              case 'bounce_rotate':
+                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
+                ry = time * 2 * Math.PI * 2;
+                break;
+              case 'twist':
+                rx = time * Math.PI * 2;
+                ry = time * 0.7 * Math.PI * 2;
+                rz = time * 0.5 * Math.PI * 2;
+                break;
+              case 'slide_x':
+                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
+                break;
+              case 'slide_z':
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 3;
+                break;
+              case 'pendulum':
+                const pendAngle = Math.sin(time * Math.PI * 2) * 1.2;
+                px = basePos.x + Math.sin(pendAngle) * 2.5;
+                py = basePos.y - Math.cos(pendAngle) * 2.5 + 2.5;
+                rz = pendAngle;
+                break;
+              case 'breathe':
+                const breatheScale = 1 + Math.sin(time * Math.PI) * 0.2;
+                sx = sy = sz = breatheScale;
+                break;
+            }
+            
+            positionValues.push(px, py, pz);
+            rotationValues.push(rx, ry, rz);
+            scaleValues.push(sx, sy, sz);
+          }
+          
+          // Create tracks only if there's actual animation
+          if (animation.type !== 'none') {
+            tracks.push(
+              new THREE.VectorKeyframeTrack(`${name}.position`, times, positionValues)
+            );
+            tracks.push(
+              new THREE.QuaternionKeyframeTrack(
+                `${name}.quaternion`, 
+                times, 
+                times.flatMap(t => {
+                  const idx = times.indexOf(t) * 3;
+                  const euler = new THREE.Euler(
+                    rotationValues[idx], 
+                    rotationValues[idx + 1], 
+                    rotationValues[idx + 2]
+                  );
+                  const quat = new THREE.Quaternion().setFromEuler(euler);
+                  return [quat.x, quat.y, quat.z, quat.w];
+                })
+              )
+            );
+            tracks.push(
+              new THREE.VectorKeyframeTrack(`${name}.scale`, times, scaleValues)
+            );
+          }
+        });
+
+        // Create animation clip if there are tracks
+        if (tracks.length > 0) {
+          const clip = new THREE.AnimationClip('Action', duration, tracks);
+          exportGroup.animations = [clip];
+        }
+
+        // Export only the group (not the entire scene)
+        exporter.parse(
+          exportGroup,
+          (gltf) => {
+            const blob = new Blob([gltf], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = '3d-model-animated.glb';
+            link.click();
+            URL.revokeObjectURL(url);
+          },
+          (error) => {
+            console.error('Export error:', error);
+            alert('エクスポート中にエラーが発生しました');
+          },
+          { binary: true, animations: tracks.length > 0 ? exportGroup.animations : [] }
+        );
+      };
+
+      const selectedObject = objects.find(obj => obj.id === selectedId);
+
+      const getShapeName = (shape) => {
+        const names = {
+          box: '立方体', rectangular: '直方体', sphere: '球', cylinder: '円柱',
+          cone: '円錐', torus: '輪', octahedron: '八面体', dodecahedron: '十二面体',
+          icosahedron: '二十面体', diamond: 'ダイヤ', heart: 'ハート'
+        };
+        return names[shape] || shape;
+      };
+
+      return (
+        <div className="fixed inset-0 bg-gray-900 text-white overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 bg-gray-800 p-3 flex items-center justify-between border-b border-gray-700 z-10">
+            <h1 className="text-xl font-bold">3Dモデル作成</h1>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setSelectionMode(!selectionMode);
+                  setSelectedForGroup([]);
+                }}
+                className={`px-6 py-3 rounded-lg transition text-base font-medium active:scale-95 ${
+                  selectionMode ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-500'
+                }`}
+              >
+                {selectionMode ? '🔗 選択中' : '🔗 グループ化'}
+              </button>
+              {selectionMode && selectedForGroup.length >= 2 && (
+                <button
+                  onClick={createGroup}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium active:scale-95"
+                >
+                  ✅ グループ作成
+                </button>
+              )}
+              <button
+                onClick={() => setIsPlaying(!isPlaying)}
+                disabled={selectionMode}
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-base font-medium active:scale-95 disabled:bg-gray-600"
+              >
+                {isPlaying ? '⏸' : '▶'}
+              </button>
+              <button
+                onClick={exportGLB}
+                disabled={objects.length === 0 || !exporterLoaded}
+                className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
+              >
+                💾 保存
+              </button>
+            </div>
+          </div>
+
+          <canvas ref={canvasRef} className="w-full h-full" />
+
+          <div className="absolute bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 z-10 max-h-96 overflow-y-auto">
+            <div className="p-4 border-b border-gray-700">
+              <h2 className="text-lg font-bold mb-3">図形を追加</h2>
+              <div className="grid grid-cols-5 gap-2 mb-3">
+                <div className="col-span-5 text-xs text-gray-400 mb-1">基本図形</div>
+                {[
+                  { shape: 'box', label: '立方体', emoji: '🔲' },
+                  { shape: 'rectangular', label: '直方体', emoji: '📦' },
+                  { shape: 'sphere', label: '球', emoji: '⚪' },
+                  { shape: 'cylinder', label: '円柱', emoji: '🥫' },
+                  { shape: 'cone', label: '円錐', emoji: '🔺' }
+                ].map(({ shape, label, emoji }) => (
+                  <button
+                    key={shape}
+                    onClick={() => addShape(shape)}
+                    className="p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition active:scale-95 flex flex-col items-center"
+                  >
+                    <span className="text-2xl mb-1">{emoji}</span>
+                    <span className="text-xs">{label}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                <div className="col-span-5 text-xs text-gray-400 mb-1">特殊図形</div>
+                {[
+                  { shape: 'torus', label: '輪', emoji: '🍩' },
+                  { shape: 'octahedron', label: '八面体', emoji: '🔷' },
+                  { shape: 'dodecahedron', label: '十二面体', emoji: '⬢' },
+                  { shape: 'icosahedron', label: '二十面体', emoji: '🔹' },
+                  { shape: 'diamond', label: 'ダイヤ', emoji: '💎' },
+                  { shape: 'heart', label: 'ハート', emoji: '❤️' }
+                ].map(({ shape, label, emoji }) => (
+                  <button
+                    key={shape}
+                    onClick={() => addShape(shape)}
+                    className="p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition active:scale-95 flex flex-col items-center"
+                  >
+                    <span className="text-2xl mb-1">{emoji}</span>
+                    <span className="text-xs">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-b border-gray-700">
+              <h2 className="text-lg font-bold mb-3">
+                {selectionMode ? `グループ化 (${selectedForGroup.length}個選択)` : `オブジェクト (${objects.length})`}
+              </h2>
+              
+              {groups.length > 0 && !selectionMode && (
+                <div className="mb-4">
+                  <h3 className="text-sm font-bold mb-2 text-yellow-400">📦 グループ</h3>
+                  <div className="space-y-2">
+                    {groups.map(group => {
+                      const groupObjects = objects.filter(obj => obj.groupId === group.id);
+                      return (
+                        <div
+                          key={group.id}
+                          className={`p-3 rounded-lg cursor-pointer transition active:scale-95 ${
+                            selectedGroupId === group.id ? 'bg-yellow-600' : 'bg-gray-700'
+                          }`}
+                          onClick={() => {
+                            setSelectedGroupId(group.id);
+                            setSelectedId(null);
+                          }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-bold">{group.name}</span>
+                              <span className="text-xs ml-2 text-gray-400">({groupObjects.length}個)</span>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm('グループを解除しますか？')) {
+                                  ungroupObjects(group.id);
+                                }
+                              }}
+                              className="text-red-400 hover:text-red-300 text-xl px-2"
+                            >
+                              🔓
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                {objects.map(obj => {
+                  const isInGroup = obj.groupId !== null;
+                  const isSelected = selectionMode && selectedForGroup.includes(obj.id);
+                  
+                  return (
+                    <div
+                      key={obj.id}
+                      className={`p-3 rounded-lg cursor-pointer transition active:scale-95 ${
+                        isSelected ? 'bg-yellow-600 ring-2 ring-yellow-300' :
+                        selectedId === obj.id && !selectionMode ? 'bg-blue-600' : 
+                        isInGroup && !selectionMode ? 'bg-gray-600 opacity-60' : 
+                        'bg-gray-700'
+                      }`}
+                      onClick={() => {
+                        if (selectionMode) {
+                          toggleObjectSelection(obj.id);
+                        } else if (!isInGroup) {
+                          setSelectedId(obj.id);
+                          setSelectedGroupId(null);
+                        }
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {selectionMode && !isInGroup && (
+                            <span className="text-xl">{isSelected ? '✅' : '⬜'}</span>
+                          )}
+                          <div
+                            className="w-8 h-8 rounded"
+                            style={{ backgroundColor: obj.color }}
+                          />
+                          <span className="text-sm">{getShapeName(obj.shape)}</span>
+                        </div>
+                        {!selectionMode && !isInGroup && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteObject(obj.id);
+                            }}
+                            className="text-red-400 hover:text-red-300 text-xl px-2"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {selectedGroupId && (() => {
+              const group = groups.find(g => g.id === selectedGroupId);
+              if (!group) return null;
+              
+              return (
+                <div className="p-4 space-y-4">
+                  <h2 className="text-lg font-bold text-yellow-400">📦 グループ設定</h2>
+                  
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">グループ名</label>
+                    <input
+                      type="text"
+                      value={group.name}
+                      onChange={(e) => updateGroup(selectedGroupId, { name: e.target.value })}
+                      className="w-full p-3 bg-gray-700 rounded-lg text-base"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">アニメーション</label>
+                    <select
+                      value={group.animation.type}
+                      onChange={(e) => updateGroup(selectedGroupId, {
+                        animation: { ...group.animation, type: e.target.value }
+                      })}
+                      className="w-full p-3 bg-gray-700 rounded-lg text-base"
+                    >
+                      <optgroup label="回転系">
+                        <option value="rotate">🔄 カスタム回転</option>
+                        <option value="spin_x">↔️ X軸回転</option>
+                        <option value="spin_y">🔄 Y軸回転</option>
+                        <option value="spin_z">⭕ Z軸回転</option>
+                        <option value="twist">🌀 ねじれ回転</option>
+                        <option value="wobble">🔀 ぐらぐら</option>
+                        <option value="swing">↩️ 振り子</option>
+                      </optgroup>
+                      <optgroup label="上下動">
+                        <option value="bounce">⬆️ バウンス</option>
+                        <option value="float">☁️ 浮遊</option>
+                        <option value="jump">🦘 ジャンプ</option>
+                        <option value="wave">🌊 波動</option>
+                      </optgroup>
+                      <optgroup label="軌道系">
+                        <option value="orbit">🔁 円軌道</option>
+                        <option value="spiral_up">🌪️ 螺旋上昇</option>
+                        <option value="spiral_down">🌀 螺旋下降</option>
+                        <option value="spiral_orbit">🎡 螺旋円軌道</option>
+                        <option value="helix">🧬 らせん</option>
+                        <option value="figure8">8️⃣ 8の字</option>
+                        <option value="infinity">♾️ 無限大</option>
+                        <option value="heart_path">💗 ハート軌道</option>
+                      </optgroup>
+                      <optgroup label="パターン系">
+                        <option value="square">◼️ 四角軌道</option>
+                        <option value="triangle">🔺 三角軌道</option>
+                        <option value="zigzag">⚡ ジグザグ</option>
+                        <option value="pendulum">⏱️ 振り子</option>
+                      </optgroup>
+                      <optgroup label="スライド系">
+                        <option value="slide_x">⬅️ 左右スライド</option>
+                        <option value="slide_z">↕️ 前後スライド</option>
+                        <option value="roll">🎲 転がる</option>
+                      </optgroup>
+                      <optgroup label="特殊効果">
+                        <option value="pulse">💓 パルス</option>
+                        <option value="breathe">🫁 呼吸</option>
+                        <option value="shake">📳 シェイク</option>
+                        <option value="flip">🔃 反転</option>
+                        <option value="bounce_rotate">🎪 バウンス回転</option>
+                        <option value="teleport">✨ テレポート</option>
+                      </optgroup>
+                      <option value="none">⏹ なし</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">速度: {group.animation.speed.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="5"
+                      step="0.1"
+                      value={group.animation.speed}
+                      onChange={(e) => updateGroup(selectedGroupId, {
+                        animation: { ...group.animation, speed: parseFloat(e.target.value) }
+                      })}
+                      className="w-full h-12"
+                    />
+                  </div>
+
+                  {group.animation.type === 'rotate' && (
+                    <div className="grid grid-cols-3 gap-3">
+                      {['x', 'y', 'z'].map(axis => (
+                        <label key={axis} className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg cursor-pointer active:scale-95">
+                          <input
+                            type="checkbox"
+                            checked={group.animation.rotationAxis[axis] > 0}
+                            onChange={(e) => updateGroup(selectedGroupId, {
+                              animation: {
+                                ...group.animation,
+                                rotationAxis: {
+                                  ...group.animation.rotationAxis,
+                                  [axis]: e.target.checked ? 1 : 0
+                                }
+                              }
+                            })}
+                            className="w-6 h-6"
+                          />
+                          <span className="text-sm">{axis.toUpperCase()}軸</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {selectedObject && !selectedGroupId && (
+              <div className="p-4 space-y-4">
+                <h2 className="text-lg font-bold">プロパティ編集</h2>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">色</label>
+                    <input
+                      type="color"
+                      value={selectedObject.color}
+                      onChange={(e) => updateObject(selectedId, { color: e.target.value })}
+                      className="w-full h-12 rounded-lg cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">サイズ: {selectedObject.size.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="3"
+                      step="0.1"
+                      value={selectedObject.size}
+                      onChange={(e) => updateObject(selectedId, { size: parseFloat(e.target.value) })}
+                      className="w-full h-12"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {[
+                    { axis: 'x', label: '🔴 左右 (X軸)', color: 'red', min: -5, max: 5 },
+                    { axis: 'y', label: '🟢 上下 (Y軸・縦)', color: 'green', min: 0, max: 5 },
+                    { axis: 'z', label: '🔵 手前・奥 (Z軸・奥行き)', color: 'blue', min: -5, max: 5 }
+                  ].map(({ axis, label, color, min, max }) => (
+                    <div key={axis} className={`bg-${color}-900 bg-opacity-30 p-3 rounded-lg border-2 border-${color}-600`}>
+                      <label className={`block text-sm mb-2 font-bold text-${color}-300`}>
+                        {label}: {selectedObject.position[axis].toFixed(1)}
+                      </label>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step="0.5"
+                        value={selectedObject.position[axis]}
+                        onChange={(e) => updateObject(selectedId, {
+                          position: { ...selectedObject.position, [axis]: parseFloat(e.target.value) }
+                        })}
+                        className="w-full h-12"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">アニメーション</label>
+                    <select
+                      value={selectedObject.animation.type}
+                      onChange={(e) => updateObject(selectedId, {
+                        animation: { ...selectedObject.animation, type: e.target.value }
+                      })}
+                      className="w-full p-3 bg-gray-700 rounded-lg text-base"
+                    >
+                      <optgroup label="回転系">
+                        <option value="rotate">🔄 カスタム回転</option>
+                        <option value="spin_x">↔️ X軸回転</option>
+                        <option value="spin_y">🔄 Y軸回転</option>
+                        <option value="spin_z">⭕ Z軸回転</option>
+                        <option value="twist">🌀 ねじれ回転</option>
+                        <option value="wobble">🔀 ぐらぐら</option>
+                        <option value="swing">↩️ 振り子</option>
+                      </optgroup>
+                      <optgroup label="上下動">
+                        <option value="bounce">⬆️ バウンス</option>
+                        <option value="float">☁️ 浮遊</option>
+                        <option value="jump">🦘 ジャンプ</option>
+                        <option value="wave">🌊 波動</option>
+                      </optgroup>
+                      <optgroup label="軌道系">
+                        <option value="orbit">🔁 円軌道</option>
+                        <option value="spiral_up">🌪️ 螺旋上昇</option>
+                        <option value="spiral_down">🌀 螺旋下降</option>
+                        <option value="spiral_orbit">🎡 螺旋円軌道</option>
+                        <option value="helix">🧬 らせん</option>
+                        <option value="figure8">8️⃣ 8の字</option>
+                        <option value="infinity">♾️ 無限大</option>
+                        <option value="heart_path">💗 ハート軌道</option>
+                      </optgroup>
+                      <optgroup label="パターン系">
+                        <option value="square">◼️ 四角軌道</option>
+                        <option value="triangle">🔺 三角軌道</option>
+                        <option value="zigzag">⚡ ジグザグ</option>
+                        <option value="pendulum">⏱️ 振り子</option>
+                      </optgroup>
+                      <optgroup label="スライド系">
+                        <option value="slide_x">⬅️ 左右スライド</option>
+                        <option value="slide_z">↕️ 前後スライド</option>
+                        <option value="roll">🎲 転がる</option>
+                      </optgroup>
+                      <optgroup label="特殊効果">
+                        <option value="pulse">💓 パルス</option>
+                        <option value="breathe">🫁 呼吸</option>
+                        <option value="shake">📳 シェイク</option>
+                        <option value="flip">🔃 反転</option>
+                        <option value="bounce_rotate">🎪 バウンス回転</option>
+                        <option value="teleport">✨ テレポート</option>
+                      </optgroup>
+                      <option value="none">⏹ なし</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2 font-medium">速度: {selectedObject.animation.speed.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="5"
+                      step="0.1"
+                      value={selectedObject.animation.speed}
+                      onChange={(e) => updateObject(selectedId, {
+                        animation: { ...selectedObject.animation, speed: parseFloat(e.target.value) }
+                      })}
+                      className="w-full h-12"
+                    />
+                  </div>
+
+                  {selectedObject.animation.type === 'rotate' && (
+                    <div className="grid grid-cols-3 gap-3">
+                      {['x', 'y', 'z'].map(axis => (
+                        <label key={axis} className="flex items-center gap-2 p-3 bg-gray-700 rounded-lg cursor-pointer active:scale-95">
+                          <input
+                            type="checkbox"
+                            checked={selectedObject.animation.rotationAxis[axis] > 0}
+                            onChange={(e) => updateObject(selectedId, {
+                              animation: {
+                                ...selectedObject.animation,
+                                rotationAxis: {
+                                  ...selectedObject.animation.rotationAxis,
+                                  [axis]: e.target.checked ? 1 : 0
+                                }
+                              }
+                            })}
+                            className="w-6 h-6"
+                          />
+                          <span className="text-sm">{axis.toUpperCase()}軸</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="absolute top-20 left-4 bg-gray-800 bg-opacity-90 p-3 rounded-lg text-sm">
+            {selectionMode ? (
+              <div>
+                <p className="font-bold text-yellow-300 mb-1">🔗 グループ化モード</p>
+                <p>オブジェクトをタップして選択</p>
+                <p className="text-xs text-gray-400">2個以上で作成可能</p>
+              </div>
+            ) : (
+              <p>📱 画面をドラッグして視点を回転</p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // Wait for Three.js to load before rendering
+    const renderApp = () => {
+      if (window.THREE && window.GLTFExporter) {
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ShapeAnimator />);
+      }
+    };
+
+    if (window.THREE && window.GLTFExporter) {
+      renderApp();
+    } else {
+      window.addEventListener('threeLoaded', renderApp);
+    }
+  </script>
+</body>
+</html>
