@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+  <!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
@@ -8,6 +8,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script type="importmap">
     {
       "imports": {
@@ -618,7 +619,7 @@
         }
       };
 
-      const exportGLB = () => {
+      const exportGLB = async (formatType = 'glb') => {
         if (!exporterRef.current) {
           alert('エクスポーターの読み込み中です。もう一度お試しください。');
           return;
@@ -626,44 +627,68 @@
 
         const exporter = exporterRef.current;
         
-        // Create a temporary group with only the objects (no grid, lights, axes)
-        const exportGroup = new THREE.Group();
-        exportGroup.name = '3DModel';
+        // より標準的なシーン構造を作成
+        const exportScene = new THREE.Scene();
+        exportScene.name = 'Scene';
         
-        // Clone objects for export
-        const exportedObjects = [];
-        objectsRef.current.forEach((obj) => {
+        // ルートグループを作成
+        const rootGroup = new THREE.Group();
+        rootGroup.name = 'RootNode';
+        exportScene.add(rootGroup);
+        
+        // オブジェクトデータとメッシュのマップ
+        const objectMap = [];
+        
+        // オブジェクトをクローンして追加
+        objectsRef.current.forEach((obj, index) => {
           const objData = objects.find(o => o.id === obj.userData.id);
           if (!objData) return;
           
+          // メッシュをクローン
           const clonedMesh = obj.clone();
-          clonedMesh.name = `object_${objData.id}`;
-          // 初期位置をセット（アニメーション開始位置）
-          clonedMesh.position.set(objData.position.x, objData.position.y, objData.position.z);
+          clonedMesh.name = `Mesh_${index}`;
+          
+          // 親ノードを作成（アニメーション用）
+          const nodeGroup = new THREE.Group();
+          nodeGroup.name = `Node_${index}`;
+          nodeGroup.position.set(objData.position.x, objData.position.y, objData.position.z);
+          nodeGroup.rotation.set(0, 0, 0);
+          nodeGroup.scale.set(1, 1, 1);
+          
+          // メッシュはノードの子として追加（ローカル座標は0,0,0）
+          clonedMesh.position.set(0, 0, 0);
           clonedMesh.rotation.set(0, 0, 0);
           clonedMesh.scale.set(1, 1, 1);
           
-          exportGroup.add(clonedMesh);
-          exportedObjects.push({ mesh: clonedMesh, data: objData });
+          nodeGroup.add(clonedMesh);
+          rootGroup.add(nodeGroup);
+          
+          objectMap.push({
+            node: nodeGroup,
+            mesh: clonedMesh,
+            data: objData,
+            index: index
+          });
         });
         
-        // Create animation tracks
+        // アニメーションクリップを作成
+        const animationClips = [];
         const tracks = [];
-        const duration = 4; // 4 seconds animation
+        const duration = 4; // 4秒
         const fps = 30;
         const numFrames = duration * fps;
         
-        exportedObjects.forEach(({ mesh, data }) => {
+        objectMap.forEach(({ node, data, index }) => {
           const animation = data.groupId 
             ? groups.find(g => g.id === data.groupId)?.animation 
             : data.animation;
           
           if (!animation || animation.type === 'none') return;
           
-          const name = mesh.name;
+          const nodeName = node.name;
           const basePos = data.position;
           
-          // Generate keyframes based on animation type
+          // キーフレームデータ
           const times = [];
           const positionValues = [];
           const rotationValues = [];
@@ -674,80 +699,130 @@
             const time = t * animation.speed;
             times.push(t);
             
-            // Default values
             let px = basePos.x, py = basePos.y, pz = basePos.z;
             let rx = 0, ry = 0, rz = 0;
             let sx = 1, sy = 1, sz = 1;
             
-            // Apply animation transformations
+            // アニメーションタイプに応じた計算
             switch (animation.type) {
               case 'rotate':
-                rx = time * animation.rotationAxis.x * Math.PI * 2;
-                ry = time * animation.rotationAxis.y * Math.PI * 2;
-                rz = time * animation.rotationAxis.z * Math.PI * 2;
-                break;
-              case 'spin_x':
-                rx = time * 2 * Math.PI * 2;
+                if (animation.rotationAxis) {
+                  rx = time * animation.rotationAxis.x * 2;
+                  ry = time * animation.rotationAxis.y * 2;
+                  rz = time * animation.rotationAxis.z * 2;
+                }
                 break;
               case 'spin_y':
-                ry = time * 2 * Math.PI * 2;
+                ry = time * Math.PI * 2;
+                break;
+              case 'spin_x':
+                rx = time * Math.PI * 2;
                 break;
               case 'spin_z':
-                rz = time * 2 * Math.PI * 2;
-                break;
-              case 'bounce':
-                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
-                break;
-              case 'orbit':
-                px = basePos.x + Math.cos(time * Math.PI * 2) * 3;
-                pz = basePos.z + Math.sin(time * Math.PI * 2) * 3;
-                break;
-              case 'swing':
-                rz = Math.sin(time * Math.PI * 2) * 0.5;
-                break;
-              case 'wave':
-                py = basePos.y + Math.sin(time * Math.PI * 2) * 1.5;
-                px = basePos.x + Math.sin(time * Math.PI) * 0.5;
-                break;
-              case 'spiral_up':
-                px = basePos.x + Math.cos(time * Math.PI * 2) * 2;
-                pz = basePos.z + Math.sin(time * Math.PI * 2) * 2;
-                py = basePos.y + (time * 0.3 % 5);
-                break;
-              case 'float':
-                py = basePos.y + Math.sin(time * Math.PI) * 1 + Math.cos(time * Math.PI * 0.6) * 0.5;
-                break;
-              case 'figure8':
-                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
-                py = basePos.y + Math.sin(time * Math.PI * 4) * 1.5;
-                break;
-              case 'heart_path':
-                const angle = time * Math.PI * 2;
-                px = basePos.x + 16 * Math.pow(Math.sin(angle), 3) * 0.15;
-                py = basePos.y + (13 * Math.cos(angle) - 5 * Math.cos(2*angle) - 2 * Math.cos(3*angle) - Math.cos(4*angle)) * 0.15;
-                break;
-              case 'pulse':
-                const scale = 1 + Math.sin(time * Math.PI * 4) * 0.3;
-                sx = sy = sz = scale;
-                break;
-              case 'wobble':
-                rx = Math.sin(time * Math.PI * 4) * 0.3;
-                rz = Math.cos(time * Math.PI * 4) * 0.3;
-                break;
-              case 'bounce_rotate':
-                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
-                ry = time * 2 * Math.PI * 2;
+                rz = time * Math.PI * 2;
                 break;
               case 'twist':
                 rx = time * Math.PI * 2;
                 ry = time * 0.7 * Math.PI * 2;
                 rz = time * 0.5 * Math.PI * 2;
                 break;
-              case 'slide_x':
-                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
+              case 'wobble':
+                rx = Math.sin(time * Math.PI * 4) * 0.3;
+                rz = Math.cos(time * Math.PI * 4) * 0.3;
                 break;
-              case 'slide_z':
-                pz = basePos.z + Math.sin(time * Math.PI * 2) * 3;
+              case 'swing':
+                rz = Math.sin(time * Math.PI * 2) * 0.5;
+                break;
+              case 'bounce':
+                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
+                break;
+              case 'float':
+                py = basePos.y + Math.sin(time * Math.PI) * 1 + Math.cos(time * Math.PI * 0.6) * 0.5;
+                break;
+              case 'jump':
+                const jumpPhase = (time % 1);
+                if (jumpPhase < 0.5) {
+                  py = basePos.y + Math.sin(jumpPhase * Math.PI * 2) * 3;
+                } else {
+                  py = basePos.y;
+                }
+                break;
+              case 'wave':
+                py = basePos.y + Math.sin(time * Math.PI * 2) * 1.5;
+                px = basePos.x + Math.sin(time * Math.PI) * 0.5;
+                break;
+              case 'orbit':
+                const orbitRadius = 2;
+                px = basePos.x + Math.cos(time * Math.PI * 2) * orbitRadius;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * orbitRadius;
+                break;
+              case 'spiral_up':
+                px = basePos.x + Math.cos(time * Math.PI * 2) * 2;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 2;
+                py = basePos.y + (time * 0.3 % 5);
+                break;
+              case 'spiral_down':
+                px = basePos.x + Math.cos(time * Math.PI * 2) * 2;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 2;
+                py = basePos.y - (time * 0.3 % 5);
+                break;
+              case 'spiral_orbit':
+                const spiralR = 2 + Math.sin(time * Math.PI) * 1;
+                px = basePos.x + Math.cos(time * Math.PI * 2) * spiralR;
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * spiralR;
+                py = basePos.y + Math.sin(time * Math.PI * 2) * 2;
+                break;
+              case 'helix':
+                px = basePos.x + Math.cos(time * Math.PI * 4) * 2;
+                pz = basePos.z + Math.sin(time * Math.PI * 4) * 2;
+                py = basePos.y + time * 0.5;
+                break;
+              case 'figure8':
+                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
+                py = basePos.y + Math.sin(time * Math.PI * 4) * 1.5;
+                break;
+              case 'infinity':
+                const infAngle = time * Math.PI * 2;
+                px = basePos.x + Math.sin(infAngle) * 3;
+                pz = basePos.z + Math.sin(infAngle) * Math.cos(infAngle) * 3;
+                break;
+              case 'heart_path':
+                const heartAngle = time * Math.PI * 2;
+                px = basePos.x + 16 * Math.pow(Math.sin(heartAngle), 3) * 0.15;
+                py = basePos.y + (13 * Math.cos(heartAngle) - 5 * Math.cos(2*heartAngle) - 2 * Math.cos(3*heartAngle) - Math.cos(4*heartAngle)) * 0.15;
+                break;
+              case 'square':
+                const sqPhase = (time % 1) * 4;
+                if (sqPhase < 1) {
+                  px = basePos.x + (sqPhase - 0.5) * 4;
+                  pz = basePos.z - 2;
+                } else if (sqPhase < 2) {
+                  px = basePos.x + 2;
+                  pz = basePos.z + ((sqPhase - 1) - 0.5) * 4;
+                } else if (sqPhase < 3) {
+                  px = basePos.x - ((sqPhase - 2) - 0.5) * 4;
+                  pz = basePos.z + 2;
+                } else {
+                  px = basePos.x - 2;
+                  pz = basePos.z - ((sqPhase - 3) - 0.5) * 4;
+                }
+                break;
+              case 'triangle':
+                const triPhase = (time % 1) * 3;
+                if (triPhase < 1) {
+                  px = basePos.x + (triPhase - 0.5) * 4;
+                  pz = basePos.z - 2;
+                } else if (triPhase < 2) {
+                  px = basePos.x + 2 - (triPhase - 1) * 4;
+                  pz = basePos.z + (triPhase - 1) * 4;
+                } else {
+                  px = basePos.x - 2 + (triPhase - 2) * 4;
+                  pz = basePos.z + 2 - (triPhase - 2) * 4;
+                }
+                break;
+              case 'zigzag':
+                px = basePos.x + Math.sin(time * Math.PI * 8) * 1.5;
+                pz = basePos.z + time * 2 % 4 - 2;
                 break;
               case 'pendulum':
                 const pendAngle = Math.sin(time * Math.PI * 2) * 1.2;
@@ -755,82 +830,204 @@
                 py = basePos.y - Math.cos(pendAngle) * 2.5 + 2.5;
                 rz = pendAngle;
                 break;
+              case 'slide_x':
+                px = basePos.x + Math.sin(time * Math.PI * 2) * 3;
+                break;
+              case 'slide_z':
+                pz = basePos.z + Math.sin(time * Math.PI * 2) * 3;
+                break;
+              case 'roll':
+                px = basePos.x + time * 2 % 8 - 4;
+                rx = time * Math.PI * 4;
+                break;
+              case 'pulse':
+                const pulseScale = 1 + Math.sin(time * Math.PI * 4) * 0.3;
+                sx = sy = sz = pulseScale;
+                break;
               case 'breathe':
                 const breatheScale = 1 + Math.sin(time * Math.PI) * 0.2;
                 sx = sy = sz = breatheScale;
                 break;
+              case 'shake':
+                px = basePos.x + (Math.random() - 0.5) * 0.2;
+                py = basePos.y + (Math.random() - 0.5) * 0.2;
+                pz = basePos.z + (Math.random() - 0.5) * 0.2;
+                break;
+              case 'flip':
+                rx = Math.floor(time * 2) * Math.PI;
+                break;
+              case 'bounce_rotate':
+                py = basePos.y + Math.abs(Math.sin(time * Math.PI)) * 2;
+                ry = time * 2 * Math.PI * 2;
+                break;
+              case 'teleport':
+                const telePhase = (time % 0.5);
+                if (telePhase < 0.1) {
+                  sx = sy = sz = 1 - telePhase * 10;
+                } else if (telePhase > 0.4) {
+                  sx = sy = sz = (telePhase - 0.4) * 10;
+                  px = basePos.x + (Math.random() - 0.5) * 4;
+                  pz = basePos.z + (Math.random() - 0.5) * 4;
+                }
+                break;
             }
             
             positionValues.push(px, py, pz);
-            rotationValues.push(rx, ry, rz);
+            
+            // オイラー角からクォータニオンに変換
+            const euler = new THREE.Euler(rx, ry, rz, 'XYZ');
+            const quat = new THREE.Quaternion().setFromEuler(euler);
+            rotationValues.push(quat.x, quat.y, quat.z, quat.w);
+            
             scaleValues.push(sx, sy, sz);
           }
           
-          // Create tracks only if there's actual animation
+          // トラックを作成（ノード名を使用）
           if (animation.type !== 'none') {
             tracks.push(
-              new THREE.VectorKeyframeTrack(`${name}.position`, times, positionValues)
-            );
-            tracks.push(
-              new THREE.QuaternionKeyframeTrack(
-                `${name}.quaternion`, 
-                times, 
-                times.flatMap(t => {
-                  const idx = times.indexOf(t) * 3;
-                  const euler = new THREE.Euler(
-                    rotationValues[idx], 
-                    rotationValues[idx + 1], 
-                    rotationValues[idx + 2]
-                  );
-                  const quat = new THREE.Quaternion().setFromEuler(euler);
-                  return [quat.x, quat.y, quat.z, quat.w];
-                })
+              new THREE.VectorKeyframeTrack(
+                nodeName + '.position',
+                times,
+                positionValues
               )
             );
             tracks.push(
-              new THREE.VectorKeyframeTrack(`${name}.scale`, times, scaleValues)
+              new THREE.QuaternionKeyframeTrack(
+                nodeName + '.quaternion',
+                times,
+                rotationValues
+              )
+            );
+            tracks.push(
+              new THREE.VectorKeyframeTrack(
+                nodeName + '.scale',
+                times,
+                scaleValues
+              )
             );
           }
         });
-
-        // Create animation clip if there are tracks
-        let animationClips = [];
+        
+        // アニメーションクリップを作成
         if (tracks.length > 0) {
-          const clip = new THREE.AnimationClip('AnimatedScene', duration, tracks);
-          // ループアニメーションとして設定
-          clip.loop = THREE.LoopRepeat;
+          const clip = new THREE.AnimationClip('Animation', duration, tracks);
           animationClips.push(clip);
-          console.log('Created animation clip with', tracks.length / 3, 'objects');
-        } else {
-          console.log('No animations to export');
+          console.log('Created animation with', tracks.length / 3, 'animated objects');
         }
-
-        // Export only the group (not the entire scene)
+        
+        // フォーマットに応じたエクスポート
+        const isBinary = formatType === 'glb';
+        const fileExtension = isBinary ? '.glb' : '.gltf';
+        const fileName = '3d-model-animated' + fileExtension;
+        const zipFileName = '3d-model-animated.zip';
+        const mimeType = isBinary ? 'model/gltf-binary' : 'model/gltf+json';
+        
+        // エクスポート
         exporter.parse(
-          exportGroup,
-          (gltf) => {
-            const blob = new Blob([gltf], { type: 'application/octet-stream' });
+          exportScene,
+          async (result) => {
+            let blob;
+            let finalFileName;
+            let finalMimeType;
+            
+            if (isBinary) {
+              // GLB: バイナリ形式（そのまま）
+              blob = new Blob([result], { type: mimeType });
+              finalFileName = fileName;
+              finalMimeType = mimeType;
+            } else {
+              // GLTF: JSON形式 → ZIP圧縮が必要
+              const output = JSON.stringify(result, null, 2);
+              
+              // JSZipを使用してZIP圧縮
+              if (typeof JSZip !== 'undefined') {
+                const zip = new JSZip();
+                zip.file(fileName, output);
+                
+                // ZIP生成
+                const zipBlob = await zip.generateAsync({ 
+                  type: 'blob',
+                  compression: 'DEFLATE',
+                  compressionOptions: { level: 9 }
+                });
+                
+                blob = zipBlob;
+                finalFileName = zipFileName;
+                finalMimeType = 'application/zip';
+                console.log('GLTF compressed to ZIP');
+              } else {
+                // JSZipが利用できない場合はそのまま
+                blob = new Blob([output], { type: mimeType });
+                finalFileName = fileName;
+                finalMimeType = mimeType;
+                console.warn('JSZip not available, exporting GLTF without compression');
+              }
+            }
+            
+            console.log(`${formatType.toUpperCase()} exported:`, (blob.size / 1024).toFixed(2), 'KB');
+            console.log('Final file:', finalFileName);
+            console.log('Animations:', animationClips.length);
+            console.log('Objects:', objectMap.length);
+            
+            if (blob.size > 50 * 1024 * 1024) {
+              alert('⚠️ ファイルサイズが大きすぎます（50MB制限）');
+              return;
+            }
+            
+            // デバイス判定
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+            
+            // iOS Share API
+            if (isIOS && navigator.share) {
+              try {
+                const file = new File([blob], finalFileName, { 
+                  type: finalMimeType,
+                  lastModified: Date.now()
+                });
+                
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                  await navigator.share({
+                    files: [file],
+                    title: `3Dモデル（${isBinary ? 'GLB' : 'GLTF-ZIP'}）`,
+                    text: animationClips.length > 0 ? `${objectMap.length}個のオブジェクト、アニメーション付き` : '3Dモデル'
+                  });
+                  
+                  alert(`✅ 共有しました（${isBinary ? 'GLB' : 'GLTF-ZIP'}形式）\n\nファイル名: ${finalFileName}\nオブジェクト数: ${objectMap.length}\nサイズ: ${(blob.size / 1024).toFixed(1)}KB\n${animationClips.length > 0 ? 'アニメーション: あり' : ''}\n\n【palanARで使用】\n1. 「ダウンロード」フォルダから選択\n2. ${finalFileName}をアップロード${isBinary ? '' : '\n3. palanARが自動的にZIPを展開します'}`);
+                  return;
+                }
+              } catch (error) {
+                if (error.name !== 'AbortError') {
+                  console.log('Share error:', error);
+                }
+              }
+            }
+            
+            // 標準ダウンロード
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = '3d-model-animated.glb';
+            link.download = finalFileName;
+            link.style.display = 'none';
+            document.body.appendChild(link);
             link.click();
-            URL.revokeObjectURL(url);
             
-            if (animationClips.length > 0) {
-              console.log('✅ Exported with', animationClips.length, 'animation(s)');
-              alert(`GLBファイルを保存しました！\n${animationClips.length}個のアニメーションを含みます。`);
-            } else {
-              alert('GLBファイルを保存しました。\n（アニメーションなし）');
-            }
+            setTimeout(() => {
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+            }, 100);
+            
+            const formatInfo = isBinary ? 'GLB形式' : 'GLTF-ZIP形式（palanAR推奨）';
+            alert(`✅ ダウンロード完了\n\n形式: ${formatInfo}\nファイル名: ${finalFileName}\nオブジェクト数: ${objectMap.length}\nサイズ: ${(blob.size / 1024).toFixed(1)}KB\n${animationClips.length > 0 ? 'アニメーション: あり' : 'アニメーション: なし'}\n\n${!isBinary ? '【palanARへのアップロード】\nZIPファイルをそのまま\nアップロードしてください。\npalanARが自動的に展開します。' : ''}\n\n${isIOS && isBinary ? '※iPadOS 18.7.1でGLBが選択できない\n場合はGLTF形式をお試しください' : ''}`);
           },
           (error) => {
             console.error('Export error:', error);
-            alert('エクスポート中にエラーが発生しました');
+            alert('❌ エクスポートエラー\n\n' + error.message);
           },
           { 
-            binary: true, 
-            animations: animationClips
+            binary: isBinary,
+            animations: animationClips,
+            includeCustomExtensions: false,
+            truncateDrawRange: true
           }
         );
       };
@@ -879,11 +1076,20 @@
                   {isPlaying ? '⏸' : '▶'}
                 </button>
                 <button
-                  onClick={exportGLB}
+                  onClick={() => exportGLB('glb')}
                   disabled={objects.length === 0 || !exporterLoaded}
-                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-base font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
+                  className="px-4 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition text-sm font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
+                  title="GLB形式（バイナリ）で保存 - PCとiPad Pro推奨"
                 >
-                  💾 保存
+                  💾 GLB
+                </button>
+                <button
+                  onClick={() => exportGLB('gltf')}
+                  disabled={objects.length === 0 || !exporterLoaded}
+                  className="px-4 py-3 bg-purple-600 hover:bg-purple-700 rounded-lg transition text-sm font-medium disabled:bg-gray-600 disabled:cursor-not-allowed active:scale-95"
+                  title="GLTF形式（ZIP圧縮）で保存 - iPadOS 18推奨"
+                >
+                  💾 ZIP
                 </button>
               </div>
             </div>
